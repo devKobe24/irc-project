@@ -1,5 +1,10 @@
 package com.ircproject.server;
 
+import com.ircproject.domain.IrcMessage;
+import com.ircproject.domain.User;
+import com.ircproject.handler.CommandDispatcher;
+import com.ircproject.parser.IrcFormatException;
+import com.ircproject.parser.IrcParser;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -13,7 +18,9 @@ import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
 import java.nio.charset.StandardCharsets;
 import java.util.Iterator;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * packageName    : com.ircproject.server
@@ -34,9 +41,19 @@ public class IrcServer implements Runnable {
     private static final int PORT = 6667; // IRC 표준 포트
     private static final int BUFFER_SIZE = 1024;
 
+    private final IrcParser parser; // Parser
+    private final CommandDispatcher dispatcher;
+    private final Map<SocketChannel, User> userRegistry = new ConcurrentHashMap<>(); // 사용자 관리
+
     private Selector selector;
     private ServerSocketChannel serverSocketChannel;
     private boolean running = false;
+
+    // 생성자 주입 (Spring이 자동으로 IrcParser를 넣어줍니다)
+    public IrcServer(IrcParser parser, CommandDispatcher dispatcher) {
+        this.parser = parser;
+        this.dispatcher = dispatcher;
+    }
 
     // 서버 시작 메서드 (Spring Boot가 시작되면 호출됨)
     public void start() {
@@ -107,6 +124,10 @@ public class IrcServer implements Runnable {
         // 클라이언트가 "데이터를 보낼 때(READ)"를 감시하도록 Selector에 등록
         clientChannel.register(selector, SelectionKey.OP_READ);
 
+        // 접속 시 User 객체 생성 및 등록
+        User newUser = new User(clientChannel);
+        userRegistry.put(clientChannel, newUser);
+
         logger.info("New Client Connected: {}", clientChannel.getRemoteAddress());
 
         // 환영 메시지 전송 (테스트용)
@@ -116,6 +137,12 @@ public class IrcServer implements Runnable {
     // [데이터 수신] 클라이언트가 메시지를 보냈을 때
     private void handleRead(SelectionKey key) {
         SocketChannel clientChannel = (SocketChannel) key.channel();
+        // 레지스트리에서 현재 사용자 찾기
+        User user = userRegistry.get(clientChannel);
+        if (user == null) {
+            return; // 예외 상황
+        }
+
         ByteBuffer buffer = ByteBuffer.allocate(BUFFER_SIZE);
 
         try {
@@ -130,18 +157,42 @@ public class IrcServer implements Runnable {
             if (bytesRead > 0) {
                 // 읽기 모드로 전환 (Write -> Read)
                 buffer.flip();
-
                 // 바이트를 문자열로 변환
-                String message = StandardCharsets.UTF_8.decode(buffer).toString();
-                logger.info("Received {}", message.trim());
+                String data = StandardCharsets.UTF_8.decode(buffer).toString();
 
-                // [Echo 로직] 받은 메시지를 그대로 다시 돌려줌
-                sendMessage(clientChannel, "ECHO: " + message);
+                // [핵심] 1. 데이터를 유저 버퍼에 쌓음
+                user.appendData(data);
+
+                // [핵심] 2. 완성된 문장이 있는지 확인 (여러 문장이 한 번에 올 수도 있음 - while)
+                String line;
+                while ((line = user.nextLine()) != null) {
+                    processMessage(user, line);
+                }
+                logger.info("Received {}", data.trim());
             }
-
         } catch (IOException e) {
             logger.warn("Connection reset by peer");
             disconnect(key, clientChannel);
+        }
+    }
+
+    // 메시지 처리 로직
+    private void processMessage(User user, String line) {
+        try {
+            logger.info("[RAW] Client says: {}", line);
+
+            // 1. 파싱
+            IrcMessage message = parser.parse(line);
+
+            // 2. 디스패처에게 위임 (이제 서버는 구제척인 명령어를 몰라도 됩니다.)
+            dispatcher.dispatch(user, message);
+
+        } catch (IrcFormatException e) {
+            logger.warn("Parsing Failed: {}", e.getMessage());
+            // 파싱 에러 시 클라이언트에게 알려주는 것이 관례
+            try {
+                sendMessage(user.getSocketChannel(), "ERROR :Invalid Message Format\r\n");
+            } catch (IOException ignored) {}
         }
     }
 
@@ -154,6 +205,7 @@ public class IrcServer implements Runnable {
     private void disconnect(SelectionKey key, SocketChannel clientChannel) {
         try {
             logger.info("Client Disconnected: {}", clientChannel.getRemoteAddress());
+            userRegistry.remove(clientChannel); // 유저 목록에서 제거
             key.cancel(); // Selector 감시 취소
             clientChannel.close(); // 소켓 닫기
         } catch (IOException e) {
