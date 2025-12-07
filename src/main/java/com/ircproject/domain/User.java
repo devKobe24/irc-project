@@ -1,7 +1,12 @@
 package com.ircproject.domain;
 
+import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.channels.SocketChannel;
+import java.nio.charset.StandardCharsets;
+import java.util.HashSet;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * packageName    : com.ircproject.domain
@@ -20,6 +25,9 @@ public class User {
 
     // 조각난 메시지를 모아둘 버퍼
     private final StringBuilder buffer = new StringBuilder();
+
+    // 내가 입장한 채널 목록 관리
+    private final Set<String> joinedChannels = new HashSet<>();
 
     // 생성 시점에는 닉네임을 아직 모를 수 있으므로(연결 직후), 초기값은 *로 설정하거나 null 처리
     public User(SocketChannel socketChannel) {
@@ -77,4 +85,35 @@ public class User {
 
         return line;
     }
+
+    /**
+     * 사용자에게 메시지를 전송합니다.
+     */
+    public void sendMessage(String message) {
+        if (socketChannel != null && socketChannel.isOpen()) {
+            try {
+                socketChannel.write(ByteBuffer.wrap(message.getBytes(StandardCharsets.UTF_8)));
+            } catch (IOException e) {
+                // 전송 실패 시 로그를 남기거나 연결 종료 처리가 필요할 수 있음
+                // 지금은 간단히 프린트
+                e.printStackTrace();
+            }
+        }
+    }
+
+    // 채널 입장 기록
+    public void addChannel(String channelName) {
+        joinedChannels.add(channelName);
+    }
+
+    // 채널 퇴장 기록
+    public void removeChannel(String channelName) {
+        joinedChannels.remove(channelName);
+    }
+
+    // 현재 입장한 모든 채널 이름 변환 (복사본 반환 권장)
+    public Set<String> getJoinedChannels() {
+        return new HashSet<>(joinedChannels);
+    }
+
 }
