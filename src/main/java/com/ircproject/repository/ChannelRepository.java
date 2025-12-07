@@ -3,6 +3,7 @@ package com.ircproject.repository;
 import com.ircproject.domain.Channel;
 import org.springframework.stereotype.Component;
 
+import java.util.Collection;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -43,5 +44,12 @@ public class ChannelRepository {
      */
     public Channel remove(String name) {
         return channels.remove(name);
+    }
+
+    /**
+     * 활성화 된 모든 채널 목록을 반환합니다.
+     */
+    public Collection<Channel> findAll() {
+        return channels.values();
     }
 }
