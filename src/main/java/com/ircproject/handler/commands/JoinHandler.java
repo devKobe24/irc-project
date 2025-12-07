@@ -5,6 +5,7 @@ import com.ircproject.domain.IrcMessage;
 import com.ircproject.domain.User;
 import com.ircproject.handler.CommandHandler;
 import com.ircproject.repository.ChannelRepository;
+import com.ircproject.repository.UserRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -27,10 +28,12 @@ public class JoinHandler implements CommandHandler {
 
     private static final Logger logger = LoggerFactory.getLogger(JoinHandler.class);
     private final ChannelRepository channelRepository;
+    private final UserRepository userRepository;
 
     // 생성자 주입
-    public JoinHandler(ChannelRepository channelRepository) {
+    public JoinHandler(ChannelRepository channelRepository, UserRepository userRepository) {
         this.channelRepository = channelRepository;
+        this.userRepository = userRepository;
     }
 
     @Override
@@ -46,17 +49,27 @@ public class JoinHandler implements CommandHandler {
 
         String channelName = message.parameters().get(0);
 
-        // 1. 채널 저장소에서 채널을 가져오거나 생성
+        // 채널 저장소에서 채널을 가져오거나 생성
         Channel channel = channelRepository.getOrCreate(channelName);
 
-        // 2. 채널에 유저 입장
+        // 채널에 유저 입장
         channel.join(user);
+
+        // 유저에게 채널 등록
+        user.addChannel(channel.getName());
 
         logger.info("User {} joined channel {}", user.getNickname(), channel.getName());
         logger.info("Current users in {}: {}", channel.getName(), channel.getUsers().size());
 
         // (중요) 3. [TODO] 같은 방에 있는 사람들에게 "누가 들어왔다"고 알려줘야 함 (Broadcasting)
-        // 지금은 임시로 입장한 본인에게만 메시지 전송
-        // user.getSocketChannel().write(...)
+        broadcastJoinMessage(channel, user);
+    }
+
+    private void broadcastJoinMessage(Channel channel, User joiner) {
+        String joinMessage = ":" + joiner.getNickname() + " JOIN " + channel.getName() + "\r\n";
+
+        for (User member : channel.getUsers()) {
+            member.sendMessage(joinMessage);
+        }
     }
 }
