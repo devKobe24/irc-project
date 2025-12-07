@@ -1,10 +1,13 @@
 package com.ircproject.server;
 
+import com.ircproject.domain.Channel;
 import com.ircproject.domain.IrcMessage;
 import com.ircproject.domain.User;
 import com.ircproject.handler.CommandDispatcher;
 import com.ircproject.parser.IrcFormatException;
 import com.ircproject.parser.IrcParser;
+import com.ircproject.repository.ChannelRepository;
+import com.ircproject.repository.UserRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -44,15 +47,22 @@ public class IrcServer implements Runnable {
     private final IrcParser parser; // Parser
     private final CommandDispatcher dispatcher;
     private final Map<SocketChannel, User> userRegistry = new ConcurrentHashMap<>(); // 사용자 관리
+    private final ChannelRepository channelRepository;
+    private final UserRepository userRepository;
 
     private Selector selector;
     private ServerSocketChannel serverSocketChannel;
     private boolean running = false;
 
     // 생성자 주입 (Spring이 자동으로 IrcParser를 넣어줍니다)
-    public IrcServer(IrcParser parser, CommandDispatcher dispatcher) {
+    public IrcServer(IrcParser parser,
+                     CommandDispatcher dispatcher,
+                     ChannelRepository channelRepository,
+                     UserRepository userRepository) {
         this.parser = parser;
         this.dispatcher = dispatcher;
+        this.channelRepository = channelRepository;
+        this.userRepository = userRepository;
     }
 
     // 서버 시작 메서드 (Spring Boot가 시작되면 호출됨)
@@ -131,7 +141,22 @@ public class IrcServer implements Runnable {
         logger.info("New Client Connected: {}", clientChannel.getRemoteAddress());
 
         // 환영 메시지 전송 (테스트용)
-        sendMessage(clientChannel, "Welcome to Java NIO IRC Server!\r\n");
+        sendMessage(clientChannel, """
+                 _       __     __                             __                                 \s
+                | |     / /__  / /________  ____ ___  ___     / /_____                            \s
+                | | /| / / _ \\/ / ___/ __ \\/ __ `__ \\/ _ \\   / __/ __ \\                           \s
+                | |/ |/ /  __/ / /__/ /_/ / / / / / /  __/  / /_/ /_/ /                           \s
+                |__/|__/\\___/_/\\___/\\____/_/ /_/_/_/\\___/___\\__/\\____/__________ _    ____________\s
+                   / //_/___  / /_  ___     /  _/ __ \\/ ____/  / ___// ____/ __ \\ |  / / ____/ __ \\
+                  / ,< / __ \\/ __ \\/ _ \\    / // /_/ / /       \\__ \\/ __/ / /_/ / | / / __/ / /_/ /
+                 / /| / /_/ / /_/ /  __/  _/ // _, _/ /___    ___/ / /___/ _, _/| |/ / /___/ _, _/\s
+                /_/ |_\\____/_.___/\\___/  /___/_/ |_|\\____/   /____/_____/_/ |_| |___/_____/_/ |_| \s
+    \r\n""");
+
+        // 닉네임 설정 메시지 전송
+        sendMessage(clientChannel, "PLZ MAKE OWN YOUR NICKNAME :)\r\n");
+        sendMessage(clientChannel, "[EXAMPLE] NIKC $Own_your_nickname\r\n");
+        sendMessage(clientChannel, "IF YOU WANT TO MORE INFO PLZ USE 'HELP' COMMAND\r\n");
     }
 
     // [데이터 수신] 클라이언트가 메시지를 보냈을 때
@@ -204,12 +229,49 @@ public class IrcServer implements Runnable {
     // 연결 종료 처리
     private void disconnect(SelectionKey key, SocketChannel clientChannel) {
         try {
-            logger.info("Client Disconnected: {}", clientChannel.getRemoteAddress());
-            userRegistry.remove(clientChannel); // 유저 목록에서 제거
+            User user = userRegistry.get(clientChannel);
+            if (user != null) {
+                logger.info("Client Disconnected: {} ({})", clientChannel.getRemoteAddress(), user.getNickname());
+
+                // 닉네임 저장소에서 삭제
+                userRepository.remove(user.getNickname());
+
+                userRegistry.remove(clientChannel);
+
+                // 유령 유저 방지: 가입된 모든 채널에서 퇴장 처리
+                for (String channelName : user.getJoinedChannels()) {
+                    Channel channel = channelRepository.get(channelName);
+                    if (channel != null) {
+                        channel.leave(user); // 채널에서 유저 삭제
+                        logger.info("Cleaned up user {} from channel {}", user.getNickname(), channelName);
+
+                        // 방에 남은 사람들에게 "누가 나갔다"고 알려주기 (PART 메시지 전송)
+                        broadcastPartMessage(channel, user);
+                    }
+                }
+                userRegistry.remove(clientChannel);
+            }
             key.cancel(); // Selector 감시 취소
             clientChannel.close(); // 소켓 닫기
         } catch (IOException e) {
             logger.error("Error closing channel", e);
+        }
+    }
+
+    // PART 메세지 전송 메서드
+    private void broadcastPartMessage(Channel channel, User leaver) {
+        // 1. IRC 표준 프로토콜 메시지 생성
+        // 형식: :닉네임 PART #채널명 :메시지
+        String partMessage = ":" + leaver.getNickname() + " PART " + channel.getName() + "\r\n";
+        String leaveMessage = leaver.getNickname() + " " + "leave this channel : " + channel.getName() + "\r\n";
+
+        // 2. 채널에 남아있는 모든 유저에게 전송 (Loop)
+        for (User member : channel.getUsers()) {
+            // 떠나는 본인이 아닌 경우에만 전송
+            if (!member.equals(leaver)) {
+                member.sendMessage(partMessage);
+                member.sendMessage(leaveMessage);
+            }
         }
     }
 }
