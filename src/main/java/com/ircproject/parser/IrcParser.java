@@ -1,6 +1,7 @@
 package com.ircproject.parser;
 
 import com.ircproject.domain.IrcMessage;
+import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -18,6 +19,7 @@ import java.util.regex.Pattern;
  * -----------------------------------------------------------
  * 2025. 12. 5.        kobe       최초 생성
  */
+@Component
 public class IrcParser {
 
     // 정규표현식 컴파일 (성능 최적화를 위해 static final로 선언)
