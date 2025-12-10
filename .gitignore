@@ -35,3 +35,10 @@ out/
 
 ### VS Code ###
 .vscode/
+
+### Security / Secrets ###
+*.p12
+*.jks
+*.key
+*.pem
+src/main/resources/keystone.p12
